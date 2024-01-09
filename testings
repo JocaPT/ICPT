@@ -1,0 +1,110 @@
+1. Configuração do Azure IoT Hub e Dispositivo
+
+Criar um IoT Hub:
+> az group create --name {resource-group} --location {location}
+> az iot hub create --name {hub-name} --resource-group {resource-group} --sku F1 --partition-count 2
+> az iot hub connection-string show ---policy-name service --output table --hub-name {hub-name}
+
+Registrar um dispositivo IoT:
+> az iot hub device-identity create --device-id {device-id} --hub-name {hub-name}
+> az iot hub device-identity connection-string show --device-id {device-id} --output table --hub-name {hub-name}
+
+2. Configuração da Azure Function App
+
+Criar uma conta de armazenamento:
+> az storage account create --name {storage-account} --location {location} --resource-group {resource-group} --sku Standard_LRS
+
+Criar um aplicativo de função:
+> az functionapp create --resource-group {resource-group} --consumption-plan-location {location} --name {functionapp-name} --storage-account {storage-account} --runtime python --functions-version 3
+
+3. Desenvolvimento do Código Python para o Dispositivo IoT (Em um folder )
+
+# Código do dispositivo IoT
+# Use a biblioteca 'azure-iot-device'
+from azure.iot.device import IoTHubDeviceClient, Message
+import time
+from counterfit_connection import CounterFitConnection
+from counterfit_shims_grove.grove_light_sensor_v1_2 import GroveLightSensor
+from counterfit_shims_grove.grove_led import GroveLed
+import json
+
+CONNECTION_STRING = "{connection-string-do-dispositivo}"
+DEVICE_METHOD_LED_ON = "led_on"
+DEVICE_METHOD_LED_OFF = "led_off"
+
+def send_message(client, luminosity):
+    msg = Message(json.dumps({"luminosidade": luminosity})
+    client.send_message(msg)
+    print(f"Enviado: {luminosity}")
+
+#### SE NECESSARIO ####
+def led_on(request):
+    # Lógica para ligar o LED
+    led = GroveLed(5)
+    led.on()
+
+def led_off(request):
+    # Lógica para desligar o LED
+    led = GroveLed(5)
+    led.off()
+########################
+
+def method_listener(client):
+    def led_control_listener(method_name, payload, user_context):
+        led = GroveLed(5)
+        if method_name == LED_ON_METHOD:
+            led.on()
+            print("LED ligado")
+        elif method_name == LED_OFF_METHOD:
+            led.off()
+            print("LED desligado")
+
+    client.on_method_request_received = led_control_listener
+
+def main():
+    # Inicialize a conexão com o CounterFit
+    connection = CounterFitConnection()
+
+    # Inicialize o sensor de luz simulado
+    light_sensor = GroveLightSensor(0)
+
+    client = IoTHubDeviceClient.create_from_connection_string(CONNECTION_STRING)
+    method_listener(client)
+    client.connect()
+
+    while True:
+        luminosidade = light_sensor.light
+        msg = json.dumps({"luminosidade": luminosidade})
+        send_message(client, luminosity)
+        time.sleep(10)
+
+if __name__ == "__main__":
+    main()
+
+4. Desenvolvimento da Azure Function App (Num folder {resource-group}-trigger)
+
+import azure.functions as func
+import json
+from azure.iot.hub import IoTHubRegistryManager
+
+CONNECTION_STRING = "{connection-string-do-hub}"
+
+def main(msg: func.ServiceBusMessage):
+    luminosidade = json.loads(msg.get_body().decode('utf-8'))['luminosidade']
+    
+    # Estabeleça a conexão com o IoT Hub
+    registry_manager = IoTHubRegistryManager(CONNECTION_STRING)
+    device_id = "{device-id}"  # ID do dispositivo
+
+    if luminosidade > 50:
+        # Envie um método direto para ligar o LED
+        method_name = "led_on"
+        payload = {}
+        result = registry_manager.invoke_device_method(device_id, method_name, payload)
+        print("Método 'led_on' enviado para o dispositivo.")
+    else:
+        # Envie um método direto para desligar o LED
+        method_name = "led_off"
+        payload = {}
+        result = registry_manager.invoke_device_method(device_id, method_name, payload)
+        print("Método 'led_off' enviado para o dispositivo.")
